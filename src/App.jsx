@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Calculator, Calendar, History, AlertCircle, Trash2, Upload, CheckCircle2, Clock, Tag, Edit3, ClipboardPaste, Filter, Zap, Target, ShieldAlert, Percent, Beaker } from 'lucide-react';
 
 const LOTTERY_TYPES = {
@@ -68,6 +68,16 @@ const CFUNCS = {
 };
 
 export default function App() {
+  // แก้ปัญหา CSS หายเวลาขึ้นเว็บจริง: ดึง Tailwind CSS CDN มาใช้แบบอัตโนมัติ
+  useEffect(() => {
+    if (!document.getElementById('tailwind-cdn')) {
+      const script = document.createElement('script');
+      script.id = 'tailwind-cdn';
+      script.src = 'https://cdn.tailwindcss.com';
+      document.head.appendChild(script);
+    }
+  }, []);
+
   const [mode, setMode] = useState('daily');
   const [inputMode, setInputMode] = useState('import');
   
@@ -723,7 +733,7 @@ export default function App() {
                                   <div className="flex flex-wrap gap-1 mt-1">
                                     {ev.runTopHits.length > 0 && <span className="text-[10px] bg-yellow-100 text-yellow-800 border border-yellow-300 px-1.5 py-0.5 rounded font-bold shadow-sm">🏃 วิ่งบน({ev.runTopHits.join(', ')})</span>}
                                     {ev.runBotHits.length > 0 && <span className="text-[10px] bg-yellow-100 text-yellow-800 border border-yellow-300 px-1.5 py-0.5 rounded font-bold shadow-sm">🏃 วิ่งล่าง({ev.runBotHits.join(', ')})</span>}
-                                    {ev.isTop3 && <span className="text-[10px] bg-green-100 text-green-800 border border-green-300 px-1.5 py-0.5 rounded font-bold shadow-sm">🎯 3บนตรง</span>}
+                                    {ev.isTop3Exact && <span className="text-[10px] bg-green-100 text-green-800 border border-green-300 px-1.5 py-0.5 rounded font-bold shadow-sm">🎯 3บนตรง</span>}
                                     {ev.isTop2Exact && <span className="text-[10px] bg-green-100 text-green-800 border border-green-300 px-1.5 py-0.5 rounded font-bold shadow-sm">🔥 2บน(ตรง)</span>}
                                     {ev.isTop2Toad && !ev.isTop2Exact && <span className="text-[10px] bg-blue-100 text-blue-800 border border-blue-300 px-1.5 py-0.5 rounded font-bold shadow-sm">🔥 2บน(กลับ)</span>}
                                     {ev.isBot2Exact && <span className="text-[10px] bg-green-100 text-green-800 border border-green-300 px-1.5 py-0.5 rounded font-bold shadow-sm">🔥 2ล่าง(ตรง)</span>}
@@ -738,7 +748,7 @@ export default function App() {
                                       <span className="text-[10px] bg-red-50 text-red-500 border border-red-200 px-1.5 py-0.5 rounded line-through shadow-sm">ดับล่าง({ev.predDeadBot}) หลุด</span>
                                     }
 
-                                    {!ev.isTop3 && !ev.isTop2Exact && !ev.isTop2Toad && !ev.isBot2Exact && !ev.isBot2Toad && ev.runTopHits.length === 0 && ev.runBotHits.length === 0 && (<span className="text-[10px] text-gray-400 border border-transparent px-1.5 py-0.5">เจาะ/วิ่ง หลุด</span>)}
+                                    {!ev.isTop3Exact && !ev.isTop2Exact && !ev.isTop2Toad && !ev.isBot2Exact && !ev.isBot2Toad && ev.runTopHits.length === 0 && ev.runBotHits.length === 0 && (<span className="text-[10px] text-gray-400 border border-transparent px-1.5 py-0.5">เจาะ/วิ่ง หลุด</span>)}
                                   </div>
                                 </div>
                               ) : <span className="text-[10px] text-gray-400">ไม่มีสถิติย้อนหลังพอให้คำนวณ</span>}
