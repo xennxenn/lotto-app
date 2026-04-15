@@ -1,6 +1,15 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Calculator, Calendar, History, AlertCircle, Trash2, Upload, CheckCircle2, Clock, Tag, Edit3, ClipboardPaste, Filter, Zap, Target, ShieldAlert, Percent, Beaker } from 'lucide-react';
 
+// --- FIX CSS FOR ONLINE DEPLOYMENT (Vercel/Vite) ---
+// บังคับโหลด Tailwind CSS ทันทีตั้งแต่เริ่มอ่านไฟล์ JS (เพื่อป้องกันหน้าเว็บโล้น)
+if (typeof window !== 'undefined' && !document.getElementById('tailwind-cdn-script')) {
+  const script = document.createElement('script');
+  script.id = 'tailwind-cdn-script';
+  script.src = 'https://cdn.tailwindcss.com';
+  document.head.appendChild(script);
+}
+
 const LOTTERY_TYPES = {
   bimonthly: ['หวยรัฐบาลไทย', 'หวยออมสิน', 'หวย ธ.ก.ส.', 'อื่นๆ (พิมพ์ระบุเอง)'],
   daily: [
@@ -68,16 +77,6 @@ const CFUNCS = {
 };
 
 export default function App() {
-  // แก้ปัญหา CSS หายเวลาขึ้นเว็บจริง: ดึง Tailwind CSS CDN มาใช้แบบอัตโนมัติ
-  useEffect(() => {
-    if (!document.getElementById('tailwind-cdn')) {
-      const script = document.createElement('script');
-      script.id = 'tailwind-cdn';
-      script.src = 'https://cdn.tailwindcss.com';
-      document.head.appendChild(script);
-    }
-  }, []);
-
   const [mode, setMode] = useState('daily');
   const [inputMode, setInputMode] = useState('import');
   
