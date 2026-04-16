@@ -38,12 +38,10 @@ const myFirebaseConfig = {
 let firebaseConfig = {};
 let isCustomConfig = false;
 try {
-  // หากมีการตั้งค่า myFirebaseConfig ไว้ จะใช้ค่านั้นก่อน
   if (typeof myFirebaseConfig !== 'undefined' && myFirebaseConfig.apiKey) {
       firebaseConfig = myFirebaseConfig;
       isCustomConfig = true;
   }
-  // ถ้าไม่มี จะดึงค่าจาก Environment ของระบบ
   else if (typeof __firebase_config !== 'undefined') {
       firebaseConfig = JSON.parse(__firebase_config);
   }
@@ -117,8 +115,22 @@ function getPermutations(str) {
   return perms;
 }
 
+// 🗓️ Helper: แปลงวันที่ (DD/MM/YY) เป็นตัวเลขเพื่อให้เรียงลำดับได้ถูกต้อง
+const getSortableDate = (dateStr) => {
+  if (!dateStr) return 0;
+  const parts = dateStr.split('/');
+  if (parts.length >= 3) {
+      const d = parseInt(parts[0], 10) || 0;
+      const m = parseInt(parts[1], 10) || 0;
+      let y = parseInt(parts[2], 10) || 0;
+      if (y < 100) y += 2500; // หากกรอกเป็นปี 2 หลัก เช่น 69 ให้อนุมานว่าเป็นปี 2569
+      return y * 10000 + m * 100 + d;
+  }
+  return 0;
+};
+
 export default function App() {
-  // --- FIREBASE STATE ---
+  // --- STATE ---
   const [user, setUser] = useState(null);
   const [isCloudConnected, setIsCloudConnected] = useState(false);
   const [isLoadingData, setIsLoadingData] = useState(true);
@@ -126,8 +138,16 @@ export default function App() {
   const [mode, setMode] = useState('daily');
   const [inputMode, setInputMode] = useState('manual');
   
-  const [bimonthlyHistory, setBimonthlyHistory] = useState([]);
-  const [dailyHistory, setDailyHistory] = useState([]);
+  // 💾 เพิ่ม Local Storage สำรองไว้ เผื่อไม่ได้ต่อ Firebase ข้อมูลจะได้ไม่หาย
+  const [bimonthlyHistory, setBimonthlyHistory] = useState(() => {
+    try { const localData = localStorage.getItem('lotto_bimonthly_v7'); return localData ? JSON.parse(localData) : []; } catch(e) { return []; }
+  });
+  const [dailyHistory, setDailyHistory] = useState(() => {
+    try { const localData = localStorage.getItem('lotto_daily_v7'); return localData ? JSON.parse(localData) : []; } catch(e) { return []; }
+  });
+
+  useEffect(() => { localStorage.setItem('lotto_bimonthly_v7', JSON.stringify(bimonthlyHistory)); }, [bimonthlyHistory]);
+  useEffect(() => { localStorage.setItem('lotto_daily_v7', JSON.stringify(dailyHistory)); }, [dailyHistory]);
   
   const [historyFilter, setHistoryFilter] = useState('ทั้งหมด');
   const [showPrediction, setShowPrediction] = useState(false);
@@ -147,22 +167,25 @@ export default function App() {
   useEffect(() => {
     if (!auth) {
         setIsLoadingData(false);
-        setError("ไม่พบการตั้งค่า Firebase กรุณาตรวจสอบ Config");
         return;
     }
     
     const initAuth = async () => {
       try {
-        // หากใช้ Config ส่วนตัวของคุณ (isCustomConfig = true) ให้ใช้แบบ Anonymously เลย
-        // จะได้ไม่ติด Error Token Mismatch
-        if (!isCustomConfig && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-             await signInWithCustomToken(auth, __initial_auth_token);
+        if (isCustomConfig) {
+             // บังคับใช้ Anonymous Login สำหรับ Firebase ส่วนตัวของคุณ เพื่อป้องกัน Token Mismatch
+             await signInAnonymously(auth);
+        } else if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+             try {
+                 await signInWithCustomToken(auth, __initial_auth_token);
+             } catch(e) {
+                 await signInAnonymously(auth);
+             }
         } else {
              await signInAnonymously(auth);
         }
       } catch (err) {
         console.error('Auth error:', err);
-        setError("เกิดข้อผิดพลาดในการยืนยันตัวตนกับฐานข้อมูล");
         setIsLoadingData(false);
       }
     };
@@ -179,11 +202,9 @@ export default function App() {
     let initialLoadBi = true;
     let initialLoadDaily = true;
 
-    // ดึงข้อมูลหวยรัฐบาล (Public Data)
     const bimonthlyRef = collection(db, 'artifacts', appId, 'public', 'data', 'bimonthly');
     const unsubBimonthly = onSnapshot(bimonthlyRef, (snapshot) => {
       const data = snapshot.docs.map(doc => doc.data());
-      data.sort((a, b) => b.id - a.id); // เรียงจากใหม่ไปเก่า
       setBimonthlyHistory(data);
       setIsCloudConnected(true);
       if (initialLoadBi) { initialLoadBi = false; if (!initialLoadDaily) setIsLoadingData(false); }
@@ -193,11 +214,9 @@ export default function App() {
       setIsLoadingData(false);
     });
 
-    // ดึงข้อมูลหวยรายวัน (Public Data)
     const dailyRef = collection(db, 'artifacts', appId, 'public', 'data', 'daily');
     const unsubDaily = onSnapshot(dailyRef, (snapshot) => {
       const data = snapshot.docs.map(doc => doc.data());
-      data.sort((a, b) => b.id - a.id);
       setDailyHistory(data);
       setIsCloudConnected(true);
       if (initialLoadDaily) { initialLoadDaily = false; if (!initialLoadBi) setIsLoadingData(false); }
@@ -207,7 +226,6 @@ export default function App() {
       setIsLoadingData(false);
     });
 
-    // Fallback loading state if collections are completely empty initially
     setTimeout(() => setIsLoadingData(false), 3000);
 
     return () => {
@@ -222,9 +240,18 @@ export default function App() {
     return ['ทั้งหมด', ...new Set(currentHistory.map(item => item.lotteryName))];
   }, [currentHistory]);
 
+  // 🗓️ เรียงลำดับจากวันที่ล่าสุดลงไปหาอดีตเสมอ
   const filteredHistory = useMemo(() => {
-    if (historyFilter === 'ทั้งหมด') return currentHistory;
-    return currentHistory.filter(item => item.lotteryName === historyFilter);
+    let data = currentHistory;
+    if (historyFilter !== 'ทั้งหมด') {
+      data = currentHistory.filter(item => item.lotteryName === historyFilter);
+    }
+    return [...data].sort((a, b) => {
+      const dateA = getSortableDate(a.date);
+      const dateB = getSortableDate(b.date);
+      if (dateA !== dateB) return dateB - dateA; // เรียงวันที่ล่าสุดขึ้นก่อน
+      return b.id - a.id; // ถ้าวันเดียวกัน เอาที่แอดล่าสุดขึ้นก่อน
+    });
   }, [currentHistory, historyFilter]);
 
   useEffect(() => { setShowPrediction(false); }, [filteredHistory, mode, aiMode]);
@@ -263,7 +290,7 @@ export default function App() {
     formSetter(prev => ({ ...prev, [name]: finalValue }));
   };
 
-  // --- FIREBASE CRUD OPERATIONS ---
+  // --- CRUD OPERATIONS (รองรับการทำงานทั้งมี Cloud และไม่มี Cloud) ---
   const saveBimonthly = async () => {
     const finalName = getLotteryName(biForm);
     let newEntry;
@@ -275,17 +302,26 @@ export default function App() {
       newEntry = { id: Date.now(), ...biForm, lotteryName: finalName, top2: biForm.top3.slice(-2) };
     }
     
-    if (!db || !user) { showMessage('เชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณารอสักครู่', 'error'); return; }
-    
-    try {
-        await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'bimonthly'), newEntry.id.toString()), newEntry);
-        setBiForm(prev => ({ ...prev, date: '', prize1: '', top3: '', bottom2: '' }));
-        setHistoryFilter(finalName); 
-        showMessage('บันทึกข้อมูลขึ้น Cloud สำเร็จ', 'success');
-    } catch (err) {
-        console.error(err);
-        showMessage('เกิดข้อผิดพลาดในการบันทึกข้อมูล', 'error');
+    // ตรวจสอบข้อมูลซ้ำ
+    const isDuplicate = bimonthlyHistory.some(item =>
+      item.lotteryName === newEntry.lotteryName &&
+      item.date === newEntry.date &&
+      (isBiThaiLottery ? item.prize1 === newEntry.prize1 : item.top3 === newEntry.top3) &&
+      item.bottom2 === newEntry.bottom2
+    );
+    if (isDuplicate) { showMessage('ข้อมูลซ้ำ! มีสถิตินี้ในระบบแล้ว', 'error'); return; }
+
+    if (db && user) {
+        try {
+            await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'bimonthly'), newEntry.id.toString()), newEntry);
+        } catch (err) { console.error(err); showMessage('เกิดข้อผิดพลาดในการบันทึก Cloud', 'error'); return; }
+    } else {
+        setBimonthlyHistory(prev => [newEntry, ...prev]);
     }
+
+    setBiForm(prev => ({ ...prev, date: '', prize1: '', top3: '', bottom2: '' }));
+    setHistoryFilter(finalName); 
+    showMessage(db && user ? 'บันทึกข้อมูลขึ้น Cloud สำเร็จ' : 'บันทึกข้อมูลลงเครื่องสำเร็จ', 'success');
   };
 
   const saveDaily = async () => {
@@ -293,17 +329,26 @@ export default function App() {
     const finalName = getLotteryName(dailyForm);
     const newEntry = { id: Date.now(), ...dailyForm, lotteryName: finalName, top2: dailyForm.top3.slice(-2) };
     
-    if (!db || !user) { showMessage('เชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณารอสักครู่', 'error'); return; }
+    // ตรวจสอบข้อมูลซ้ำ
+    const isDuplicate = dailyHistory.some(item =>
+      item.lotteryName === newEntry.lotteryName &&
+      item.date === newEntry.date &&
+      item.top3 === newEntry.top3 &&
+      item.bottom2 === newEntry.bottom2
+    );
+    if (isDuplicate) { showMessage('ข้อมูลซ้ำ! มีสถิตินี้ในระบบแล้ว', 'error'); return; }
 
-    try {
-        await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'daily'), newEntry.id.toString()), newEntry);
-        setDailyForm(prev => ({ ...prev, date: '', top3: '', bottom2: '' }));
-        setHistoryFilter(finalName); 
-        showMessage('บันทึกข้อมูลขึ้น Cloud สำเร็จ', 'success');
-    } catch (err) {
-        console.error(err);
-        showMessage('เกิดข้อผิดพลาดในการบันทึกข้อมูล', 'error');
+    if (db && user) {
+        try {
+            await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'daily'), newEntry.id.toString()), newEntry);
+        } catch (err) { console.error(err); showMessage('เกิดข้อผิดพลาดในการบันทึก Cloud', 'error'); return; }
+    } else {
+        setDailyHistory(prev => [newEntry, ...prev]);
     }
+
+    setDailyForm(prev => ({ ...prev, date: '', top3: '', bottom2: '' }));
+    setHistoryFilter(finalName); 
+    showMessage(db && user ? 'บันทึกข้อมูลขึ้น Cloud สำเร็จ' : 'บันทึกข้อมูลลงเครื่องสำเร็จ', 'success');
   };
 
   const processImport = async () => {
@@ -311,6 +356,7 @@ export default function App() {
     const lines = importText.trim().split(/\r?\n/);
     const newEntries = [];
     let errorCount = 0; let autoFilterName = 'ทั้งหมด';
+    let skippedCount = 0;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -329,6 +375,22 @@ export default function App() {
       val1 = val1.replace(/[^0-9]/g, '');
       val2 = val2.replace(/[^0-9]/g, '');
 
+      // ตรวจสอบข้อมูลซ้ำก่อนนำเข้า
+      let isDup = false;
+      if (mode === 'daily') {
+          isDup = dailyHistory.some(item => item.lotteryName === nameToUse && item.date === date && item.top3 === val1 && item.bottom2 === val2) ||
+                  newEntries.some(item => item.lotteryName === nameToUse && item.date === date && item.top3 === val1 && item.bottom2 === val2);
+      } else {
+          const isThai = val1.length === 6;
+          isDup = bimonthlyHistory.some(item => item.lotteryName === nameToUse && item.date === date && (isThai ? item.prize1 === val1 : item.top3 === val1) && item.bottom2 === val2) ||
+                  newEntries.some(item => item.lotteryName === nameToUse && item.date === date && (isThai ? item.prize1 === val1 : item.top3 === val1) && item.bottom2 === val2);
+      }
+
+      if (isDup) {
+          skippedCount++;
+          continue;
+      }
+
       if (val1.length === 6 && val2.length === 2) {
           newEntries.push({ id: Date.now() + i, lotteryName: nameToUse, drawTime: time, date, prize1: val1, top3: val1.slice(-3), top2: val1.slice(-2), bottom2: val2 });
           autoFilterName = nameToUse;
@@ -341,56 +403,80 @@ export default function App() {
     }
 
     if (newEntries.length > 0) {
-      if (!db || !user) { showMessage('เชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณารอสักครู่', 'error'); return; }
-      
-      try {
-          const colName = mode === 'daily' ? 'daily' : 'bimonthly';
-          const colRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
-          for (const entry of newEntries) {
-              await setDoc(doc(colRef, entry.id.toString()), entry);
-          }
-          setImportText('');
-          if (newEntries.every(e => e.lotteryName === autoFilterName)) setHistoryFilter(autoFilterName);
-          showMessage(`ซิงค์ข้อมูลขึ้น Cloud สำเร็จ ${newEntries.length} งวด ${errorCount > 0 ? `(ข้ามแถวที่ผิด ${errorCount})` : ''}`, 'success');
-          setInputMode('manual');
-      } catch (err) {
-          console.error(err);
-          showMessage('เกิดข้อผิดพลาดในการซิงค์ข้อมูล', 'error');
+      if (db && user) {
+          try {
+              const colName = mode === 'daily' ? 'daily' : 'bimonthly';
+              const colRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
+              for (const entry of newEntries) {
+                  await setDoc(doc(colRef, entry.id.toString()), entry);
+              }
+          } catch (err) { console.error(err); showMessage('เกิดข้อผิดพลาดในการซิงค์ Cloud', 'error'); return; }
+      } else {
+          if (mode === 'daily') setDailyHistory(prev => [...newEntries, ...prev]);
+          else setBimonthlyHistory(prev => [...newEntries, ...prev]);
       }
-    } else showMessage('ไม่พบข้อมูลที่ตรงกับรูปแบบ', 'error');
+      setImportText('');
+      if (newEntries.every(e => e.lotteryName === autoFilterName)) setHistoryFilter(autoFilterName);
+      
+      let msg = `เพิ่มสำเร็จ ${newEntries.length} งวด`;
+      if (errorCount > 0) msg += ` (ผิดรูปแบบ ${errorCount})`;
+      if (skippedCount > 0) msg += ` (ข้ามข้อมูลซ้ำ ${skippedCount})`;
+      showMessage(msg, 'success');
+      
+      setInputMode('manual');
+    } else {
+      if (skippedCount > 0 && errorCount === 0) showMessage(`ข้ามข้อมูลซ้ำทั้งหมด ${skippedCount} งวด (ไม่มีข้อมูลใหม่)`, 'error');
+      else showMessage('ไม่พบข้อมูลที่ตรงกับรูปแบบ หรือข้อมูลซ้ำทั้งหมด', 'error');
+    }
   };
 
+  // 🧹 ฟังก์ชันล้างข้อมูล (ปรับปรุงให้รองรับตอนไม่มี Cloud)
   const handleClearAll = async () => {
-    if (!db || !user) { showMessage('ไม่สามารถเชื่อมต่อฐานข้อมูลได้', 'error'); return; }
-    
     const colName = mode === 'daily' ? 'daily' : 'bimonthly';
     const history = mode === 'daily' ? dailyHistory : bimonthlyHistory;
     const toDelete = historyFilter === 'ทั้งหมด' ? history : history.filter(item => item.lotteryName === historyFilter);
 
-    try {
-        const colRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
-        for (const item of toDelete) {
-            await deleteDoc(doc(colRef, item.id.toString()));
+    if (db && user && isCloudConnected) {
+        try {
+            const colRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
+            for (const item of toDelete) {
+                await deleteDoc(doc(colRef, item.id.toString()));
+            }
+            showMessage('ลบข้อมูลออกจาก Cloud เรียบร้อย', 'success');
+        } catch (err) {
+            console.error(err);
+            showMessage('เกิดข้อผิดพลาดในการลบข้อมูลบน Cloud', 'error');
+            return;
         }
-        setConfirmClear(false); 
-        setHistoryFilter('ทั้งหมด'); 
-        setShowPrediction(false);
-        showMessage('ลบข้อมูลออกจาก Cloud เรียบร้อย', 'success');
-    } catch (err) {
-        console.error(err);
-        showMessage('เกิดข้อผิดพลาดในการลบข้อมูล', 'error');
+    } else {
+        if (mode === 'bimonthly') {
+            if (historyFilter === 'ทั้งหมด') setBimonthlyHistory([]);
+            else setBimonthlyHistory(bimonthlyHistory.filter(item => item.lotteryName !== historyFilter));
+        } else {
+            if (historyFilter === 'ทั้งหมด') setDailyHistory([]);
+            else setDailyHistory(dailyHistory.filter(item => item.lotteryName !== historyFilter));
+        }
+        showMessage('ล้างข้อมูลเรียบร้อย', 'success');
     }
+    
+    setConfirmClear(false); 
+    setHistoryFilter('ทั้งหมด'); 
+    setShowPrediction(false);
   };
 
+  // 🗑️ ฟังก์ชันลบทีละแถว (ปรับปรุงให้รองรับตอนไม่มี Cloud)
   const deleteEntry = async (id, historyType) => {
-    if (!db || !user) { showMessage('ไม่สามารถเชื่อมต่อฐานข้อมูลได้', 'error'); return; }
-    
-    try {
-        const colName = historyType === 'bi' ? 'bimonthly' : 'daily';
-        await deleteDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', colName), id.toString()));
-    } catch (err) {
-        console.error(err);
-        showMessage('เกิดข้อผิดพลาดในการลบข้อมูล', 'error');
+    if (db && user && isCloudConnected) {
+        try {
+            const colName = historyType === 'bi' ? 'bimonthly' : 'daily';
+            await deleteDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', colName), id.toString()));
+        } catch (err) {
+            console.error(err);
+            showMessage('เกิดข้อผิดพลาดในการลบข้อมูลบน Cloud', 'error');
+        }
+    } else {
+        if (historyType === 'bi') setBimonthlyHistory(bimonthlyHistory.filter(item => item.id !== id));
+        else setDailyHistory(dailyHistory.filter(item => item.id !== id));
     }
   };
 
@@ -788,7 +874,7 @@ export default function App() {
                 <span className="text-[10px] sm:text-xs text-gray-400 font-bold">Offline</span>
               </div>
             )}
-            <span className="text-[10px] sm:text-xs bg-indigo-500 text-white px-2 py-1 rounded-full font-black shadow">V.30 CLOUD</span>
+            <span className="text-[10px] sm:text-xs bg-indigo-500 text-white px-2 py-1 rounded-full font-black shadow">V.31</span>
           </div>
         </div>
       </header>
@@ -797,8 +883,8 @@ export default function App() {
       {isLoadingData && (
         <div className="fixed inset-0 bg-white/80 z-50 flex flex-col items-center justify-center backdrop-blur-sm">
           <Loader2 size={48} className="text-purple-600 animate-spin mb-4" />
-          <h2 className="text-xl font-bold text-purple-800">กำลังซิงค์ข้อมูลจาก Cloud...</h2>
-          <p className="text-sm text-gray-500 mt-2">ประมวลผลข้อมูลร่วมกันทั่วประเทศ</p>
+          <h2 className="text-xl font-bold text-purple-800">กำลังเชื่อมต่อข้อมูล...</h2>
+          <p className="text-sm text-gray-500 mt-2">โปรดรอสักครู่</p>
         </div>
       )}
 
@@ -855,7 +941,7 @@ export default function App() {
                   placeholder={mode === 'daily' ? "14/04/69  763  33\n13/04/69  738  09" : "16/04/69  123456  88\n01/04/69  987654  99"}
                 />
                 <button onClick={processImport} className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 sm:py-4 px-4 rounded-xl shadow-md transition-colors text-base sm:text-lg flex justify-center items-center gap-2">
-                  <Upload size={20}/> ซิงค์ข้อมูลขึ้น Cloud
+                  <Upload size={20}/> เพิ่มข้อมูลในระบบ
                 </button>
               </div>
             )}
@@ -896,7 +982,7 @@ export default function App() {
                       <div><label className="block text-xs sm:text-sm font-bold text-blue-600 mb-1">3 ตัวบน</label><input type="text" inputMode="numeric" pattern="[0-9]*" name="top3" maxLength="3" placeholder="456" value={biForm.top3} onChange={(e) => handleChange(e, setBiForm)} className="w-full p-3 sm:p-4 border-2 border-blue-200 rounded-xl outline-none font-mono text-center text-xl sm:text-2xl tracking-[0.3em] focus:border-blue-500" /></div>
                     )}
                     <div><label className="block text-xs sm:text-sm font-bold text-red-600 mb-1">เลขท้าย 2 ตัวล่าง</label><input type="text" inputMode="numeric" pattern="[0-9]*" name="bottom2" maxLength="2" placeholder="99" value={biForm.bottom2} onChange={(e) => handleChange(e, setBiForm)} className="w-full p-3 sm:p-4 border-2 border-red-200 rounded-xl outline-none font-mono text-center text-xl sm:text-2xl tracking-[0.3em] focus:border-red-500" /></div>
-                    <button onClick={saveBimonthly} className="w-full bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white font-bold py-3 sm:py-4 px-4 border border-indigo-200 rounded-xl transition-colors mt-2 shadow-sm text-base flex justify-center items-center gap-2"><Cloud size={18}/> บันทึกขึ้น Cloud</button>
+                    <button onClick={saveBimonthly} className="w-full bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white font-bold py-3 sm:py-4 px-4 border border-indigo-200 rounded-xl transition-colors mt-2 shadow-sm text-base flex justify-center items-center gap-2"><Cloud size={18}/> เพิ่มข้อมูลในระบบ</button>
                   </div>
                 ) : (
                   <div className="space-y-3 pt-2">
@@ -904,7 +990,7 @@ export default function App() {
                       <div><label className="block text-xs sm:text-sm font-bold text-blue-600 mb-1">3 ตัวบน</label><input type="text" inputMode="numeric" pattern="[0-9]*" name="top3" maxLength="3" placeholder="456" value={dailyForm.top3} onChange={(e) => handleChange(e, setDailyForm)} className="w-full p-3 sm:p-4 border-2 border-blue-200 rounded-xl outline-none font-mono text-center text-xl sm:text-2xl tracking-[0.2em] focus:border-blue-500" /></div>
                       <div><label className="block text-xs sm:text-sm font-bold text-red-600 mb-1">2 ตัวล่าง</label><input type="text" inputMode="numeric" pattern="[0-9]*" name="bottom2" maxLength="2" placeholder="88" value={dailyForm.bottom2} onChange={(e) => handleChange(e, setDailyForm)} className="w-full p-3 sm:p-4 border-2 border-red-200 rounded-xl outline-none font-mono text-center text-xl sm:text-2xl tracking-[0.2em] focus:border-red-500" /></div>
                     </div>
-                    <button onClick={saveDaily} className="w-full bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white font-bold py-3 sm:py-4 px-4 border border-indigo-200 rounded-xl transition-colors mt-2 shadow-sm text-base flex justify-center items-center gap-2"><Cloud size={18}/> บันทึกขึ้น Cloud</button>
+                    <button onClick={saveDaily} className="w-full bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white font-bold py-3 sm:py-4 px-4 border border-indigo-200 rounded-xl transition-colors mt-2 shadow-sm text-base flex justify-center items-center gap-2"><Cloud size={18}/> เพิ่มข้อมูลในระบบ</button>
                   </div>
                 )}
               </div>
