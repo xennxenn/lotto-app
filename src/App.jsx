@@ -1,5 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Calculator, Calendar, History, AlertCircle, Trash2, Upload, CheckCircle2, Clock, Tag, Edit3, ClipboardPaste, Filter, Zap, Target, ShieldAlert, Percent, Beaker, Search, BarChart3 } from 'lucide-react';
+import { Calculator, Calendar, History, AlertCircle, Trash2, Upload, CheckCircle2, Clock, Tag, Edit3, ClipboardPaste, Filter, Zap, Target, ShieldAlert, Percent, Beaker, Search, BarChart3, Cloud, CloudOff, Loader2 } from 'lucide-react';
+
+// --- FIREBASE IMPORTS ---
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 
 // --- FIX CSS FOR ONLINE DEPLOYMENT (Vercel/Vite & Mobile) ---
 if (typeof window !== 'undefined' && !document.getElementById('tailwind-cdn-script')) {
@@ -17,6 +22,34 @@ if (typeof window !== 'undefined' && !document.getElementById('tailwind-cdn-scri
   meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
 }
 
+// ==========================================
+// 🔴 FIREBASE CONFIGURATION (สำหรับการนำไปใช้งานจริง)
+// ==========================================
+const myFirebaseConfig = {
+  apiKey: "AIzaSyAyjXsGxqBdxioYk7v319XM0_1V1E4un-s",
+  authDomain: "lotto-app-28248.firebaseapp.com",
+  projectId: "lotto-app-28248",
+  storageBucket: "lotto-app-28248.firebasestorage.app",
+  messagingSenderId: "252908326501",
+  appId: "1:252908326501:web:6b9d6cc8a5e0fe7bdf008c"
+};
+
+// ระบบจัดการ Config สำหรับรันใน Canvas นี้ (ไม่ต้องแก้ไขส่วนนี้)
+let firebaseConfig = {};
+try {
+  // หากมีการตั้งค่า myFirebaseConfig ไว้ จะใช้ค่านั้นก่อน
+  if (typeof myFirebaseConfig !== 'undefined') firebaseConfig = myFirebaseConfig;
+  // ถ้าไม่มี จะดึงค่าจาก Environment ของระบบ
+  else if (typeof __firebase_config !== 'undefined') firebaseConfig = JSON.parse(__firebase_config);
+} catch (e) {}
+
+const firebaseApp = Object.keys(firebaseConfig).length > 0 ? initializeApp(firebaseConfig) : null;
+const auth = firebaseApp ? getAuth(firebaseApp) : null;
+const db = firebaseApp ? getFirestore(firebaseApp) : null;
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// ==========================================
+
 const LOTTERY_TYPES = {
   bimonthly: ['หวยรัฐบาลไทย', 'หวยออมสิน', 'หวย ธ.ก.ส.', 'อื่นๆ (พิมพ์ระบุเอง)'],
   daily: [
@@ -27,7 +60,7 @@ const LOTTERY_TYPES = {
   ]
 };
 
-// --- STRATEGIES POOL (จำกัดจำนวนสูตรเพื่อป้องกัน Browser ค้าง) ---
+// --- STRATEGIES POOL ---
 const STRATS = [];
 let stratIdCount = 1;
 
@@ -47,7 +80,6 @@ let seed = 12345;
 const random = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
 const rIdx = () => Math.floor(random()*8);
 
-// ⚡️ OPTIMIZATION: ลดจำนวนสูตรแบบสุ่มลงเพื่อลดภาระการคำนวณ (จาก 3500 เหลือ 500)
 for(let k=0; k<500; k++) {
     STRATS.push({
         t: 'adv', id: stratIdCount++,
@@ -80,22 +112,21 @@ function getPermutations(str) {
 }
 
 export default function App() {
+  // --- FIREBASE STATE ---
+  const [user, setUser] = useState(null);
+  const [isCloudConnected, setIsCloudConnected] = useState(false);
+  const [isLoadingData, setIsLoadingData] = useState(true);
+
   const [mode, setMode] = useState('daily');
   const [inputMode, setInputMode] = useState('manual');
   
-  const [bimonthlyHistory, setBimonthlyHistory] = useState(() => {
-    try { const localData = localStorage.getItem('lotto_bimonthly_v6'); return localData ? JSON.parse(localData) : []; } catch(e) { return []; }
-  });
-  const [dailyHistory, setDailyHistory] = useState(() => {
-    try { const localData = localStorage.getItem('lotto_daily_v6'); return localData ? JSON.parse(localData) : []; } catch(e) { return []; }
-  });
-
-  useEffect(() => { localStorage.setItem('lotto_bimonthly_v6', JSON.stringify(bimonthlyHistory)); }, [bimonthlyHistory]);
-  useEffect(() => { localStorage.setItem('lotto_daily_v6', JSON.stringify(dailyHistory)); }, [dailyHistory]);
+  // ไม่มี LocalStorage แล้ว ใช้ State เปล่ารอดึงข้อมูลจาก Cloud
+  const [bimonthlyHistory, setBimonthlyHistory] = useState([]);
+  const [dailyHistory, setDailyHistory] = useState([]);
   
   const [historyFilter, setHistoryFilter] = useState('ทั้งหมด');
   const [showPrediction, setShowPrediction] = useState(false);
-  
+  const [aiMode, setAiMode] = useState('stable'); 
   const [testNum, setTestNum] = useState('');
   const [testPos, setTestPos] = useState('top');
   
@@ -106,6 +137,82 @@ export default function App() {
   const [biForm, setBiForm] = useState({ lotteryType: 'หวยรัฐบาลไทย', customName: '', drawTime: '15:30', date: '', prize1: '', top3: '', bottom2: '' });
   const [dailyForm, setDailyForm] = useState({ lotteryType: 'ฮานอยปกติ', customName: '', drawTime: '18:30', date: '', top3: '', bottom2: '' });
   const [importText, setImportText] = useState('');
+
+  // --- FIREBASE INITIALIZATION & AUTH ---
+  useEffect(() => {
+    if (!auth) {
+        setIsLoadingData(false);
+        setError("ไม่พบการตั้งค่า Firebase กรุณาตรวจสอบ Config");
+        return;
+    }
+    
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } catch (tokenErr) {
+            console.warn('Custom token mismatch (likely using own firebaseConfig), falling back to anonymous sign in:', tokenErr);
+            await signInAnonymously(auth);
+          }
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error('Auth error:', err);
+        setError("เกิดข้อผิดพลาดในการยืนยันตัวตนกับฐานข้อมูล");
+        setIsLoadingData(false);
+      }
+    };
+    initAuth();
+    
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // --- FIREBASE REAL-TIME DATA SYNC ---
+  useEffect(() => {
+    if (!user || !db) return;
+
+    let initialLoadBi = true;
+    let initialLoadDaily = true;
+
+    // ดึงข้อมูลหวยรัฐบาล (Public Data)
+    const bimonthlyRef = collection(db, 'artifacts', appId, 'public', 'data', 'bimonthly');
+    const unsubBimonthly = onSnapshot(bimonthlyRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => doc.data());
+      data.sort((a, b) => b.id - a.id); // เรียงจากใหม่ไปเก่า
+      setBimonthlyHistory(data);
+      setIsCloudConnected(true);
+      if (initialLoadBi) { initialLoadBi = false; if (!initialLoadDaily) setIsLoadingData(false); }
+    }, (err) => {
+      console.error("Firestore Error (Bimonthly):", err);
+      setIsCloudConnected(false);
+      setIsLoadingData(false);
+    });
+
+    // ดึงข้อมูลหวยรายวัน (Public Data)
+    const dailyRef = collection(db, 'artifacts', appId, 'public', 'data', 'daily');
+    const unsubDaily = onSnapshot(dailyRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => doc.data());
+      data.sort((a, b) => b.id - a.id);
+      setDailyHistory(data);
+      setIsCloudConnected(true);
+      if (initialLoadDaily) { initialLoadDaily = false; if (!initialLoadBi) setIsLoadingData(false); }
+    }, (err) => {
+      console.error("Firestore Error (Daily):", err);
+      setIsCloudConnected(false);
+      setIsLoadingData(false);
+    });
+
+    // Fallback loading state if collections are completely empty initially
+    setTimeout(() => setIsLoadingData(false), 3000);
+
+    return () => {
+      unsubBimonthly();
+      unsubDaily();
+    };
+  }, [user]);
   
   const currentHistory = mode === 'bimonthly' ? bimonthlyHistory : dailyHistory;
   
@@ -118,7 +225,7 @@ export default function App() {
     return currentHistory.filter(item => item.lotteryName === historyFilter);
   }, [currentHistory, historyFilter]);
 
-  useEffect(() => { setShowPrediction(false); }, [filteredHistory, mode]);
+  useEffect(() => { setShowPrediction(false); }, [filteredHistory, mode, aiMode]);
 
   const getLotteryName = (form) => form.lotteryType === 'อื่นๆ (พิมพ์ระบุเอง)' ? (form.customName || 'ไม่ระบุชื่อ') : form.lotteryType;
   const isBiThaiLottery = mode === 'bimonthly' && biForm.lotteryType === 'หวยรัฐบาลไทย';
@@ -154,7 +261,8 @@ export default function App() {
     formSetter(prev => ({ ...prev, [name]: finalValue }));
   };
 
-  const saveBimonthly = () => {
+  // --- FIREBASE CRUD OPERATIONS ---
+  const saveBimonthly = async () => {
     const finalName = getLotteryName(biForm);
     let newEntry;
     if (isBiThaiLottery) {
@@ -164,21 +272,39 @@ export default function App() {
       if (!biForm.date || biForm.top3.length !== 3 || biForm.bottom2.length !== 2) { showMessage('กรุณากรอก วันที่, 3 ตัวบน (3 หลัก) และ 2 ตัวล่างให้ครบถ้วน', 'error'); return; }
       newEntry = { id: Date.now(), ...biForm, lotteryName: finalName, top2: biForm.top3.slice(-2) };
     }
-    setBimonthlyHistory([newEntry, ...bimonthlyHistory]);
-    setBiForm(prev => ({ ...prev, date: '', prize1: '', top3: '', bottom2: '' }));
-    setHistoryFilter(finalName); showMessage('บันทึกสถิติสำเร็จ', 'success');
+    
+    if (!db || !user) { showMessage('เชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณารอสักครู่', 'error'); return; }
+    
+    try {
+        await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'bimonthly'), newEntry.id.toString()), newEntry);
+        setBiForm(prev => ({ ...prev, date: '', prize1: '', top3: '', bottom2: '' }));
+        setHistoryFilter(finalName); 
+        showMessage('บันทึกข้อมูลขึ้น Cloud สำเร็จ', 'success');
+    } catch (err) {
+        console.error(err);
+        showMessage('เกิดข้อผิดพลาดในการบันทึกข้อมูล', 'error');
+    }
   };
 
-  const saveDaily = () => {
+  const saveDaily = async () => {
     if (!dailyForm.date || dailyForm.top3.length !== 3 || dailyForm.bottom2.length !== 2) { showMessage('กรุณากรอก วันที่, 3 ตัวบน (3 หลัก) และ 2 ตัวล่างให้ครบถ้วน', 'error'); return; }
     const finalName = getLotteryName(dailyForm);
     const newEntry = { id: Date.now(), ...dailyForm, lotteryName: finalName, top2: dailyForm.top3.slice(-2) };
-    setDailyHistory([newEntry, ...dailyHistory]);
-    setDailyForm(prev => ({ ...prev, date: '', top3: '', bottom2: '' }));
-    setHistoryFilter(finalName); showMessage('บันทึกสถิติสำเร็จ', 'success');
+    
+    if (!db || !user) { showMessage('เชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณารอสักครู่', 'error'); return; }
+
+    try {
+        await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'daily'), newEntry.id.toString()), newEntry);
+        setDailyForm(prev => ({ ...prev, date: '', top3: '', bottom2: '' }));
+        setHistoryFilter(finalName); 
+        showMessage('บันทึกข้อมูลขึ้น Cloud สำเร็จ', 'success');
+    } catch (err) {
+        console.error(err);
+        showMessage('เกิดข้อผิดพลาดในการบันทึกข้อมูล', 'error');
+    }
   };
 
-  const processImport = () => {
+  const processImport = async () => {
     if (!importText.trim()) { showMessage('กรุณาวางข้อมูลก่อนกดนำเข้า', 'error'); return; }
     const lines = importText.trim().split(/\r?\n/);
     const newEntries = [];
@@ -213,33 +339,61 @@ export default function App() {
     }
 
     if (newEntries.length > 0) {
-      if (mode === 'daily') setDailyHistory(prev => [...newEntries, ...prev]);
-      else setBimonthlyHistory(prev => [...newEntries, ...prev]);
-      setImportText('');
-      if (newEntries.every(e => e.lotteryName === autoFilterName)) setHistoryFilter(autoFilterName);
-      showMessage(`นำเข้าสำเร็จ ${newEntries.length} งวด ${errorCount > 0 ? `(ข้ามแถวที่ผิด ${errorCount})` : ''}`, 'success');
-      setInputMode('manual');
+      if (!db || !user) { showMessage('เชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณารอสักครู่', 'error'); return; }
+      
+      try {
+          const colName = mode === 'daily' ? 'daily' : 'bimonthly';
+          const colRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
+          for (const entry of newEntries) {
+              await setDoc(doc(colRef, entry.id.toString()), entry);
+          }
+          setImportText('');
+          if (newEntries.every(e => e.lotteryName === autoFilterName)) setHistoryFilter(autoFilterName);
+          showMessage(`ซิงค์ข้อมูลขึ้น Cloud สำเร็จ ${newEntries.length} งวด ${errorCount > 0 ? `(ข้ามแถวที่ผิด ${errorCount})` : ''}`, 'success');
+          setInputMode('manual');
+      } catch (err) {
+          console.error(err);
+          showMessage('เกิดข้อผิดพลาดในการซิงค์ข้อมูล', 'error');
+      }
     } else showMessage('ไม่พบข้อมูลที่ตรงกับรูปแบบ', 'error');
   };
 
-  const handleClearAll = () => {
-    if (mode === 'bimonthly') {
-      if (historyFilter === 'ทั้งหมด') setBimonthlyHistory([]);
-      else setBimonthlyHistory(bimonthlyHistory.filter(item => item.lotteryName !== historyFilter));
-    } else {
-      if (historyFilter === 'ทั้งหมด') setDailyHistory([]);
-      else setDailyHistory(dailyHistory.filter(item => item.lotteryName !== historyFilter));
+  const handleClearAll = async () => {
+    if (!db || !user) { showMessage('ไม่สามารถเชื่อมต่อฐานข้อมูลได้', 'error'); return; }
+    
+    const colName = mode === 'daily' ? 'daily' : 'bimonthly';
+    const history = mode === 'daily' ? dailyHistory : bimonthlyHistory;
+    const toDelete = historyFilter === 'ทั้งหมด' ? history : history.filter(item => item.lotteryName === historyFilter);
+
+    try {
+        const colRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
+        for (const item of toDelete) {
+            await deleteDoc(doc(colRef, item.id.toString()));
+        }
+        setConfirmClear(false); 
+        setHistoryFilter('ทั้งหมด'); 
+        setShowPrediction(false);
+        showMessage('ลบข้อมูลออกจาก Cloud เรียบร้อย', 'success');
+    } catch (err) {
+        console.error(err);
+        showMessage('เกิดข้อผิดพลาดในการลบข้อมูล', 'error');
     }
-    setConfirmClear(false); setHistoryFilter('ทั้งหมด'); setShowPrediction(false);
   };
 
-  const deleteEntry = (id, historyType) => {
-    if (historyType === 'bi') setBimonthlyHistory(bimonthlyHistory.filter(item => item.id !== id));
-    else setDailyHistory(dailyHistory.filter(item => item.id !== id));
+  const deleteEntry = async (id, historyType) => {
+    if (!db || !user) { showMessage('ไม่สามารถเชื่อมต่อฐานข้อมูลได้', 'error'); return; }
+    
+    try {
+        const colName = historyType === 'bi' ? 'bimonthly' : 'daily';
+        await deleteDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', colName), id.toString()));
+    } catch (err) {
+        console.error(err);
+        showMessage('เกิดข้อผิดพลาดในการลบข้อมูล', 'error');
+    }
   };
 
 
-  // --- AI SUPER-FAST EVALUATION ENGINE ---
+  // --- DUAL-MODE AI ENGINE (Stable vs Trending) ---
   const aiAnalysis = useMemo(() => {
     if (historyFilter === 'ทั้งหมด' || filteredHistory.length < 2) return null;
 
@@ -257,7 +411,6 @@ export default function App() {
       ];
     });
 
-    // Caching ล่วงหน้าเพื่อลดภาระของคอมพิวเตอร์และมือถือ โหลดเสร็จไวขึ้น
     const cache = Array(STRATS.length);
     for(let sIdx = 0; sIdx < STRATS.length; sIdx++) {
         const s = STRATS[sIdx];
@@ -272,7 +425,6 @@ export default function App() {
         const standIdx = targetIdx + 1; 
         let results = [];
         
-        // คำนวณจากสถิติทั้งหมดที่มี
         let totalTests = numDraws - standIdx - 1;
         if (totalTests <= 0) totalTests = 1; 
 
@@ -297,12 +449,19 @@ export default function App() {
                 if (isDead) hit = !hit;
 
                 if (hit) { 
-                    score += 2; 
                     rawHits++; 
                     let delta = t - standIdx;
-                    if (delta === 1) score += 5; 
-                    else if (delta <= 3) score += 3; 
-                    else if (delta <= 7) score += 1; 
+                    
+                    if (aiMode === 'stable') {
+                        score += 10; 
+                        if (delta === 1) score += 5; 
+                        else if (delta <= 5) score += 2;
+                    } else { 
+                        score += 1; 
+                        if (delta === 1) score += 100; 
+                        else if (delta <= 3) score += 50; 
+                        else if (delta <= 5) score += 10;
+                    }
                 }
             }
             results.push({ sIdx, score, rawHits, totalTests });
@@ -324,7 +483,6 @@ export default function App() {
     let hits = { top3: 0, top2: 0, bottom2: 0, topRun: 0, botRun: 0, deadTopPass: 0, deadBotPass: 0 };
     let historyEvals = {}; 
 
-    // จำลองและโชว์ผลแบ็คเทสต์ทั้งหมด (ตามประวัติที่มี)
     const evalLimit = numDraws - 1;
 
     for(let k = 0; k < evalLimit; k++) {
@@ -403,7 +561,6 @@ export default function App() {
         };
     }
 
-    // 2. ทำนายงวดพรุ่งนี้
     const todayD = D[0];
     
     const optH_Tmrw = getTopStratsForTarget(-1, 1);
@@ -464,25 +621,23 @@ export default function App() {
         },
         modelStats: {
             runTopAcc: calculateConfidence(runTopTmrw),
-            runBotAcc: calculateConfidence(runBotTmrw)
+            runBotAcc: calculateConfidence(runBotTmrw),
+            runTopStratName: aiMode === 'stable' ? "AI คงเส้นคงวา (วิเคราะห์สถิติยาว)" : "AI เกาะกระแส (วิเคราะห์เลขไหลล่าสุด)",
+            runBotStratName: aiMode === 'stable' ? "AI คงเส้นคงวา (วิเคราะห์สถิติยาว)" : "AI เกาะกระแส (วิเคราะห์เลขไหลล่าสุด)"
         },
         hits: hits,
         historyEvals: historyEvals
     };
-  }, [filteredHistory, historyFilter]);
+  }, [filteredHistory, historyFilter, aiMode]);
 
   // --- CUSTOM NUMBER TESTER ---
   const customTesterStats = useMemo(() => {
     if (!testNum || filteredHistory.length < 2) return null;
     const numStr = testNum.replace(/[^0-9]/g, '');
-    if (numStr.length < 2 || numStr.length > 3) return null; // รองรับ 2-3 หลักเท่านั้น
+    if (numStr.length < 2 || numStr.length > 3) return null; 
     
-    if (testPos === 'bottom' && numStr.length !== 2) {
-        return { error: "เล็กล่างรองรับเฉพาะเลข 2 หลัก" };
-    }
-    if (testPos === 'top' && numStr.length !== 2 && numStr.length !== 3) {
-        return { error: "เลขบนรองรับเฉพาะเลข 2 หรือ 3 หลัก" };
-    }
+    if (testPos === 'bottom' && numStr.length !== 2) return { error: "เล็กล่างรองรับเฉพาะเลข 2 หลัก" };
+    if (testPos === 'top' && numStr.length !== 2 && numStr.length !== 3) return { error: "เลขบนรองรับเฉพาะเลข 2 หรือ 3 หลัก" };
 
     const numDraws = filteredHistory.length;
     const D = filteredHistory.map(entry => {
@@ -506,14 +661,13 @@ export default function App() {
         cache[sIdx] = row;
     }
 
-    // ฟังก์ชันค้นหาสูตรที่ทายได้เลขตามที่ผู้ใช้กำหนดในงวดปัจจุบัน
     const getBestStratForValue = (funcType, targetValue) => {
         let bestStratIdx = -1;
         let maxScore = -1;
         for (let sIdx = 0; sIdx < STRATS.length; sIdx++) {
-            if (cache[sIdx][0] !== targetValue) continue; // ต้องทายงวดนี้ให้ตรงเลขที่คุณอยากได้
+            if (cache[sIdx][0] !== targetValue) continue; 
             let score = 0;
-            for (let t = 1; t < numDraws; t++) { // เช็คจากสถิติทั้งหมด
+            for (let t = 1; t < numDraws; t++) { 
                 const pred = cache[sIdx][t];
                 const currD = D[t-1];
                 let hit = false;
@@ -525,10 +679,16 @@ export default function App() {
                     case 5: hit = currD[4] === pred; break;
                 }
                 if (hit) {
-                    score += 2;
-                    if (t === 1) score += 5;
-                    else if (t <= 3) score += 3;
-                    else if (t <= 7) score += 1;
+                    if (aiMode === 'stable') {
+                        score += 10;
+                        if (t === 1) score += 5;
+                        else if (t <= 5) score += 2;
+                    } else {
+                        score += 1;
+                        if (t === 1) score += 100;
+                        else if (t <= 3) score += 50;
+                        else if (t <= 5) score += 10;
+                    }
                 }
             }
             if (score > maxScore) {
@@ -560,7 +720,7 @@ export default function App() {
 
     let exact = 0, toad = 0, run = 0;
     let historyLog = [];
-    const evalLimit = numDraws - 1; // เช็คทั้งหมด
+    const evalLimit = numDraws - 1; 
 
     for(let k = 0; k < evalLimit; k++) {
         const standDataIdx = k + 1;
@@ -601,7 +761,7 @@ export default function App() {
     }
 
     return { exact, toad, run, total: evalLimit, historyLog };
-  }, [testNum, testPos, filteredHistory]);
+  }, [testNum, testPos, filteredHistory, aiMode]);
 
 
   return (
@@ -614,9 +774,31 @@ export default function App() {
             <Zap size={24} className="text-yellow-400 sm:w-7 sm:h-7" />
             <h1 className="text-lg sm:text-2xl font-bold tracking-wide">Lotto AI <span className="hidden sm:inline">Optimizer</span></h1>
           </div>
-          <span className="text-[10px] sm:text-xs bg-green-500 text-white px-2 py-1 rounded-full font-black shadow">V.28 LIGHTNING</span>
+          <div className="flex items-center gap-2">
+            {isCloudConnected ? (
+              <div className="flex items-center gap-1 bg-green-500/20 px-2 py-1 rounded-full border border-green-500/30">
+                <Cloud size={14} className="text-green-400" />
+                <span className="text-[10px] sm:text-xs text-green-400 font-bold">Online Sync</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 bg-gray-500/20 px-2 py-1 rounded-full border border-gray-500/30">
+                <CloudOff size={14} className="text-gray-400" />
+                <span className="text-[10px] sm:text-xs text-gray-400 font-bold">Offline</span>
+              </div>
+            )}
+            <span className="text-[10px] sm:text-xs bg-indigo-500 text-white px-2 py-1 rounded-full font-black shadow">V.30 CLOUD</span>
+          </div>
         </div>
       </header>
+
+      {/* Loading Overlay */}
+      {isLoadingData && (
+        <div className="fixed inset-0 bg-white/80 z-50 flex flex-col items-center justify-center backdrop-blur-sm">
+          <Loader2 size={48} className="text-purple-600 animate-spin mb-4" />
+          <h2 className="text-xl font-bold text-purple-800">กำลังซิงค์ข้อมูลจาก Cloud...</h2>
+          <p className="text-sm text-gray-500 mt-2">ประมวลผลข้อมูลร่วมกันทั่วประเทศ</p>
+        </div>
+      )}
 
       <main className="max-w-6xl mx-auto p-3 sm:p-4 mt-2 sm:mt-4">
         
@@ -671,7 +853,7 @@ export default function App() {
                   placeholder={mode === 'daily' ? "14/04/69  763  33\n13/04/69  738  09" : "16/04/69  123456  88\n01/04/69  987654  99"}
                 />
                 <button onClick={processImport} className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 sm:py-4 px-4 rounded-xl shadow-md transition-colors text-base sm:text-lg flex justify-center items-center gap-2">
-                  <Upload size={20}/> นำเข้าข้อมูล
+                  <Upload size={20}/> ซิงค์ข้อมูลขึ้น Cloud
                 </button>
               </div>
             )}
@@ -712,7 +894,7 @@ export default function App() {
                       <div><label className="block text-xs sm:text-sm font-bold text-blue-600 mb-1">3 ตัวบน</label><input type="text" inputMode="numeric" pattern="[0-9]*" name="top3" maxLength="3" placeholder="456" value={biForm.top3} onChange={(e) => handleChange(e, setBiForm)} className="w-full p-3 sm:p-4 border-2 border-blue-200 rounded-xl outline-none font-mono text-center text-xl sm:text-2xl tracking-[0.3em] focus:border-blue-500" /></div>
                     )}
                     <div><label className="block text-xs sm:text-sm font-bold text-red-600 mb-1">เลขท้าย 2 ตัวล่าง</label><input type="text" inputMode="numeric" pattern="[0-9]*" name="bottom2" maxLength="2" placeholder="99" value={biForm.bottom2} onChange={(e) => handleChange(e, setBiForm)} className="w-full p-3 sm:p-4 border-2 border-red-200 rounded-xl outline-none font-mono text-center text-xl sm:text-2xl tracking-[0.3em] focus:border-red-500" /></div>
-                    <button onClick={saveBimonthly} className="w-full bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white font-bold py-3 sm:py-4 px-4 border border-indigo-200 rounded-xl transition-colors mt-2 shadow-sm text-base">+ เพิ่มเข้าคลังสถิติ</button>
+                    <button onClick={saveBimonthly} className="w-full bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white font-bold py-3 sm:py-4 px-4 border border-indigo-200 rounded-xl transition-colors mt-2 shadow-sm text-base flex justify-center items-center gap-2"><Cloud size={18}/> บันทึกขึ้น Cloud</button>
                   </div>
                 ) : (
                   <div className="space-y-3 pt-2">
@@ -720,7 +902,7 @@ export default function App() {
                       <div><label className="block text-xs sm:text-sm font-bold text-blue-600 mb-1">3 ตัวบน</label><input type="text" inputMode="numeric" pattern="[0-9]*" name="top3" maxLength="3" placeholder="456" value={dailyForm.top3} onChange={(e) => handleChange(e, setDailyForm)} className="w-full p-3 sm:p-4 border-2 border-blue-200 rounded-xl outline-none font-mono text-center text-xl sm:text-2xl tracking-[0.2em] focus:border-blue-500" /></div>
                       <div><label className="block text-xs sm:text-sm font-bold text-red-600 mb-1">2 ตัวล่าง</label><input type="text" inputMode="numeric" pattern="[0-9]*" name="bottom2" maxLength="2" placeholder="88" value={dailyForm.bottom2} onChange={(e) => handleChange(e, setDailyForm)} className="w-full p-3 sm:p-4 border-2 border-red-200 rounded-xl outline-none font-mono text-center text-xl sm:text-2xl tracking-[0.2em] focus:border-red-500" /></div>
                     </div>
-                    <button onClick={saveDaily} className="w-full bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white font-bold py-3 sm:py-4 px-4 border border-indigo-200 rounded-xl transition-colors mt-2 shadow-sm text-base">+ เพิ่มเข้าคลังสถิติ</button>
+                    <button onClick={saveDaily} className="w-full bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white font-bold py-3 sm:py-4 px-4 border border-indigo-200 rounded-xl transition-colors mt-2 shadow-sm text-base flex justify-center items-center gap-2"><Cloud size={18}/> บันทึกขึ้น Cloud</button>
                   </div>
                 )}
               </div>
@@ -746,12 +928,20 @@ export default function App() {
               <div className="absolute top-0 right-0 w-48 h-48 sm:w-64 sm:h-64 bg-purple-500 opacity-10 rounded-full -mr-16 -mt-16 sm:-mr-20 sm:-mt-20 blur-3xl"></div>
               
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-5 sm:mb-6 relative z-10 gap-4">
-                <div>
-                  <h2 className="text-lg sm:text-xl font-bold flex items-center gap-2">
+                <div className="w-full md:w-auto">
+                  <h2 className="text-lg sm:text-xl font-bold flex items-center gap-2 mb-3">
                     <Zap size={22} className="text-yellow-400"/>
-                    AI ชุดเจาะ 2 หาง (ระบบจำสูตรเร็ว)
+                    AI ชุดเจาะ 2 หาง
                   </h2>
-                  <p className="text-xs sm:text-sm text-purple-200 mt-1">ทำนายผล<strong className="text-yellow-300">งวดถัดไป</strong> ของ <strong className="text-white">{historyFilter === 'ทั้งหมด' ? '...' : historyFilter}</strong></p>
+                  <div className="flex bg-black/20 p-1 rounded-lg border border-white/10 w-full sm:w-fit">
+                    <button onClick={() => setAiMode('stable')} className={`flex-1 sm:flex-none px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-bold rounded-md transition-all ${aiMode === 'stable' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-200 hover:bg-white/10'}`}>
+                      🎯 สูตรคงเส้นคงวา
+                    </button>
+                    <button onClick={() => setAiMode('trending')} className={`flex-1 sm:flex-none px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-bold rounded-md transition-all ${aiMode === 'trending' ? 'bg-red-500 text-white shadow-md' : 'text-purple-200 hover:bg-white/10'}`}>
+                      🔥 สูตรกำลังไหล
+                    </button>
+                  </div>
+                  <p className="text-xs sm:text-sm text-purple-200 mt-3">ทำนายผล<strong className="text-yellow-300">งวดถัดไป</strong> ของ <strong className="text-white">{historyFilter === 'ทั้งหมด' ? '...' : historyFilter}</strong></p>
                 </div>
                 
                 {historyFilter === 'ทั้งหมด' ? (
@@ -778,7 +968,7 @@ export default function App() {
                      <div className={`flex-1 border p-2.5 sm:p-3 rounded-xl flex items-center justify-between shadow-inner ${aiAnalysis.modelStats.runTopAcc >= 80 ? 'bg-green-500/20 border-green-400/50' : 'bg-white/10 border-white/20'}`}>
                         <div>
                            <p className="text-[10px] sm:text-xs text-green-200 font-bold mb-0.5">✅ ระดับความน่าจะเป็นบน (Confidence):</p>
-                           <p className="text-xs sm:text-sm font-bold text-yellow-300">วิเคราะห์จากความแม่นยำ 100 สูตร</p>
+                           <p className="text-xs sm:text-sm font-bold text-yellow-300">{aiAnalysis.modelStats.runTopStratName}</p>
                         </div>
                         <div className={`font-black px-2 sm:px-3 py-1.5 sm:py-2 rounded-lg flex items-center gap-1 shadow-sm text-base sm:text-xl ${aiAnalysis.modelStats.runTopAcc >= 80 ? 'bg-green-500 text-white ring-2 ring-yellow-400' : 'bg-white/20 text-white'}`}>
                            {aiAnalysis.modelStats.runTopAcc} <Percent size={14}/>
@@ -787,7 +977,7 @@ export default function App() {
                      <div className={`flex-1 border p-2.5 sm:p-3 rounded-xl flex items-center justify-between shadow-inner ${aiAnalysis.modelStats.runBotAcc >= 80 ? 'bg-green-500/20 border-green-400/50' : 'bg-white/10 border-white/20'}`}>
                         <div>
                            <p className="text-[10px] sm:text-xs text-green-200 font-bold mb-0.5">✅ ระดับความน่าจะเป็นล่าง (Confidence):</p>
-                           <p className="text-xs sm:text-sm font-bold text-yellow-300">วิเคราะห์จากความแม่นยำ 100 สูตร</p>
+                           <p className="text-xs sm:text-sm font-bold text-yellow-300">{aiAnalysis.modelStats.runBotStratName}</p>
                         </div>
                         <div className={`font-black px-2 sm:px-3 py-1.5 sm:py-2 rounded-lg flex items-center gap-1 shadow-sm text-base sm:text-xl ${aiAnalysis.modelStats.runBotAcc >= 80 ? 'bg-green-500 text-white ring-2 ring-yellow-400' : 'bg-white/20 text-white'}`}>
                            {aiAnalysis.modelStats.runBotAcc} <Percent size={14}/>
@@ -865,7 +1055,7 @@ export default function App() {
             <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-blue-200 mt-4 sm:mt-6">
               <h2 className="text-base sm:text-lg font-bold flex items-center gap-1.5 sm:gap-2 text-blue-800 mb-3">
                 <Search size={20} className="text-blue-600" />
-                ทดสอบเลขส่วนตัว (เช็คความแม่นยำ)
+                ทดสอบเลขส่วนตัว (เช็คความแม่นยำตามโหมด)
               </h2>
               
               <div className="flex flex-col sm:flex-row gap-3 items-end sm:items-center">
@@ -978,7 +1168,7 @@ export default function App() {
                       <th className="px-2 sm:px-3 py-2 sm:py-3 font-bold whitespace-nowrap">วันที่</th>
                       <th className="px-2 sm:px-3 py-2 sm:py-3 text-center text-blue-600 font-bold whitespace-nowrap">ผลบน</th>
                       <th className="px-2 sm:px-3 py-2 sm:py-3 text-center text-red-600 font-bold whitespace-nowrap">ผลล่าง</th>
-                      <th className="px-2 sm:px-3 py-2 sm:py-3 font-bold text-purple-700">ผลตรวจสูตร AI (ตามที่ให้ไว้)</th>
+                      <th className="px-2 sm:px-3 py-2 sm:py-3 font-bold text-purple-700">ผลตรวจสูตร AI (ตามโหมดที่เลือก)</th>
                       <th className="px-1 sm:px-2 py-2 sm:py-3"></th>
                     </tr>
                   </thead>
@@ -1032,7 +1222,7 @@ export default function App() {
                                     {!ev.isTop3Exact && !ev.isTop2Exact && !ev.isTop2Toad && !ev.isBot2Exact && !ev.isBot2Toad && ev.runTopHits.length === 0 && ev.runBotHits.length === 0 && (<span className="text-[9px] sm:text-[10px] text-gray-400 border border-transparent px-1 py-0.5 whitespace-nowrap">เจาะ/วิ่ง หลุด</span>)}
                                   </div>
                                 </div>
-                              ) : <span className="text-[9px] sm:text-[10px] text-gray-400">ไม่มีข้อมูลสถิติ (ไม่ได้รันคำนวณย้อนหลังลึก)</span>}
+                              ) : <span className="text-[9px] sm:text-[10px] text-gray-400">ไม่มีข้อมูลสถิติ</span>}
                             </td>
                             <td className="px-1 sm:px-2 py-2.5 text-right align-top">
                               <button onClick={() => deleteEntry(entry.id, mode === 'bimonthly' ? 'bi' : 'daily')} className="text-gray-300 hover:text-red-500 p-1 sm:p-1.5 bg-white rounded-md border border-transparent hover:border-red-200 hover:bg-red-50 transition-all">
