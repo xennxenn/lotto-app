@@ -36,11 +36,17 @@ const myFirebaseConfig = {
 
 // ระบบจัดการ Config สำหรับรันใน Canvas นี้ (ไม่ต้องแก้ไขส่วนนี้)
 let firebaseConfig = {};
+let isCustomConfig = false;
 try {
   // หากมีการตั้งค่า myFirebaseConfig ไว้ จะใช้ค่านั้นก่อน
-  if (typeof myFirebaseConfig !== 'undefined') firebaseConfig = myFirebaseConfig;
+  if (typeof myFirebaseConfig !== 'undefined' && myFirebaseConfig.apiKey) {
+      firebaseConfig = myFirebaseConfig;
+      isCustomConfig = true;
+  }
   // ถ้าไม่มี จะดึงค่าจาก Environment ของระบบ
-  else if (typeof __firebase_config !== 'undefined') firebaseConfig = JSON.parse(__firebase_config);
+  else if (typeof __firebase_config !== 'undefined') {
+      firebaseConfig = JSON.parse(__firebase_config);
+  }
 } catch (e) {}
 
 const firebaseApp = Object.keys(firebaseConfig).length > 0 ? initializeApp(firebaseConfig) : null;
@@ -120,7 +126,6 @@ export default function App() {
   const [mode, setMode] = useState('daily');
   const [inputMode, setInputMode] = useState('manual');
   
-  // ไม่มี LocalStorage แล้ว ใช้ State เปล่ารอดึงข้อมูลจาก Cloud
   const [bimonthlyHistory, setBimonthlyHistory] = useState([]);
   const [dailyHistory, setDailyHistory] = useState([]);
   
@@ -148,15 +153,12 @@ export default function App() {
     
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          try {
-            await signInWithCustomToken(auth, __initial_auth_token);
-          } catch (tokenErr) {
-            console.warn('Custom token mismatch (likely using own firebaseConfig), falling back to anonymous sign in:', tokenErr);
-            await signInAnonymously(auth);
-          }
+        // หากใช้ Config ส่วนตัวของคุณ (isCustomConfig = true) ให้ใช้แบบ Anonymously เลย
+        // จะได้ไม่ติด Error Token Mismatch
+        if (!isCustomConfig && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+             await signInWithCustomToken(auth, __initial_auth_token);
         } else {
-          await signInAnonymously(auth);
+             await signInAnonymously(auth);
         }
       } catch (err) {
         console.error('Auth error:', err);
